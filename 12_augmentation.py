@@ -2,20 +2,33 @@ import os
 import argparse
 import torch
 import torchvision
+import torchvision.transforms as transforms
 from models.vgg import vgg11_bn
 import torch.nn as nn
 import torch.optim as optim
 import time
 from pathlib import Path
+from torch.utils.tensorboard import SummaryWriter
 
 def train(opt):
     epochs = opt.epochs
     batch_size = opt.batch_size
     name = opt.name
+    # tensorboard settings
+    log_dir = Path('logs')/name
+    tb_writer = SummaryWriter(log_dir=log_dir)
+    # Augmentation
+    train_transforms = transforms.Compose([transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2471, 0.2435, 0.2616))])
+
+    val_transforms = transforms.Compose([transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2471, 0.2435, 0.2616))])
+
     # Train dataset
-    transforms = torchvision.transforms.ToTensor()
     train_dataset = torchvision.datasets.CIFAR10('./data', train=True, download=True, 
-                                                    transform=transforms)
+                                                    transform=train_transforms)
     classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
     # Train dataloader
     num_workers = min([os.cpu_count(), batch_size])
@@ -24,7 +37,7 @@ def train(opt):
 
     # Validation dataset
     val_dataset = torchvision.datasets.CIFAR10('./data', train=False, download=True,
-                                                    transform=transforms)
+                                                    transform=val_transforms)
     val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, 
                             shuffle=True, num_workers=num_workers, drop_last=True)
     
@@ -41,9 +54,18 @@ def train(opt):
     loss_fn = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 
+    # loading a weight file (if exists)
+    weight_file = Path('weights')/(name + '.pth')
+    best_accuracy = 0.0
     start_epoch, end_epoch = (0, epochs)
- 
-     # training/validation
+    if os.path.exists(weight_file):
+        checkpoint = torch.load(weight_file)
+        model.load_state_dict(checkpoint['model'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_accuracy = checkpoint['best_accuracy']
+        print('resumed from epoch %d' % start_epoch)
+
+    # training/validation
     for epoch in range(start_epoch, end_epoch):
         print('epoch: %d/%d' % (epoch, end_epoch-1))
         t0 = time.time()
@@ -53,8 +75,21 @@ def train(opt):
         # validation
         val_epoch_loss, accuracy = val_one_epoch(val_dataloader, model, loss_fn, device)
         print('[validation] loss=%.4f, accuracy=%.4f' % (val_epoch_loss, accuracy))
+        # saving the best status into a weight file
+        if accuracy > best_accuracy:
+            best_weight_file = Path('weights')/(name + '_best.pth')
+            best_accuracy = accuracy
+            state = {'model': model.state_dict(), 'epoch': epoch, 'best_accuracy': best_accuracy}
+            torch.save(state, best_weight_file)
+            print('best accuracy=>saved\n')
+        # saving the current status into a weight file
+        state = {'model': model.state_dict(), 'epoch': epoch, 'best_accuracy': best_accuracy}
+        torch.save(state, weight_file)
+        # tensorboard logging
+        tb_writer.add_scalar('train_epoch_loss', epoch_loss, epoch)
+        tb_writer.add_scalar('val_epoch_loss', val_epoch_loss, epoch)
+        tb_writer.add_scalar('val_accuracy', accuracy, epoch)
 
-       
 def train_one_epoch(train_dataloader, model, loss_fn, optimizer, device):
     model.train()
     losses = [] 
@@ -94,7 +129,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=200, help='target epochs')
     parser.add_argument('--batch-size', type=int, default=128, help='batch size')
-    parser.add_argument('--name', default='ohhan', help='name for the run')
+    parser.add_argument('--name', default='ohhan2', help='name for the run')
 
     opt = parser.parse_args()
 
