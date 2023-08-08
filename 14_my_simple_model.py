@@ -3,7 +3,6 @@ import argparse
 import torch
 import torchvision
 import torchvision.transforms as transforms
-from models.my_vgg import MyVGG11
 import torch.nn as nn
 import torch.optim as optim
 import time
@@ -31,7 +30,7 @@ def train(opt):
                                                     transform=train_transforms)
     classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
     # Train dataloader
-    num_workers = min([min([os.cpu_count(), 32]), batch_size])  
+    num_workers = min([os.cpu_count(), batch_size])
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, 
                             shuffle=True, num_workers=num_workers, drop_last=True)
 
@@ -42,24 +41,22 @@ def train(opt):
                             shuffle=True, num_workers=num_workers, drop_last=True)
     
     # Network model
-    model = MyVGG11()
+    model = nn.Sequential(nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, padding=1),
+                          nn.BatchNorm2d(64), nn.ReLU(inplace=True), nn.MaxPool2d((2,2)),
+                          nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
+                          nn.BatchNorm2d(128), nn.ReLU(inplace=True), nn.MaxPool2d((2,2)),
+                          nn.Flatten(), nn.Linear(8*8*128, 4096), nn.Dropout(),
+                          nn.Linear(4096, 10))
 
     # GPU-support
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if torch.cuda.device_count() > 1:   # multi-GPU
-       model = torch.nn.DataParallel(model)
+        model = torch.nn.DataParallel(model)
     model.to(device)
 
     # Loss function and optimizer
     loss_fn = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
-
-    # AMP
-    if torch.cuda.is_available() and opt.amp == True:
-        scaler = torch.cuda.amp.GradScaler()
-        print('[AMP Enabled]')
-    else:
-        scaler = None
 
     # Learning rate scheduler
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
@@ -79,7 +76,7 @@ def train(opt):
     for epoch in range(start_epoch, end_epoch):
         print('epoch: %d/%d' % (epoch, end_epoch-1))
         t0 = time.time()
-        epoch_loss = train_one_epoch(train_dataloader, model, loss_fn, optimizer, device, scaler)
+        epoch_loss = train_one_epoch(train_dataloader, model, loss_fn, optimizer, device)
         t1 = time.time()
         print('loss=%.4f (took %.2f sec)' % (epoch_loss, t1-t0))
         lr_scheduler.step()
@@ -101,26 +98,16 @@ def train(opt):
         tb_writer.add_scalar('val_epoch_loss', val_epoch_loss, epoch)
         tb_writer.add_scalar('val_accuracy', accuracy, epoch)
 
-def train_one_epoch(train_dataloader, model, loss_fn, optimizer, device, scaler=None):
+def train_one_epoch(train_dataloader, model, loss_fn, optimizer, device):
     model.train()
     losses = [] 
     for i, (imgs, targets) in enumerate(train_dataloader):
         imgs, targets = imgs.to(device), targets.to(device)
         optimizer.zero_grad()   # zeros the parameter gradients
-        if scaler is None:
-            preds = model(imgs)     # forward
-            loss = loss_fn(preds, targets) # calculates the iteration loss  
-            loss.backward()         # backward
-            optimizer.step()        # update weights
-        else:
-            with torch.cuda.amp.autocast():
-                preds = model(imgs)     # forward
-                loss = loss_fn(preds, targets)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
-        
+        preds = model(imgs)     # forward
+        loss = loss_fn(preds, targets) # calculates the iteration loss  
+        loss.backward()         # backward
+        optimizer.step()        # update weights
         # print the iteration loss every 100 iterations
         if i % 100 == 0:
             print('\t iteration: %d/%d, loss=%.4f' % (i, len(train_dataloader)-1, loss))    
@@ -150,8 +137,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=200, help='target epochs')
     parser.add_argument('--batch-size', type=int, default=128, help='batch size')
-    parser.add_argument('--name', default='myvgg11_amp', help='name for the run')
-    parser.add_argument('--amp', action='store_true', help='use of amp')
+    parser.add_argument('--name', default='my_simple_model', help='name for the run')
 
     opt = parser.parse_args()
 
